@@ -1,0 +1,19 @@
+# Deployed by Vivek Nair (VN)
+services:
+  - type: web
+    name: ai-dungeon-master
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: AI_API_KEY
+        sync: false # set in the Render dashboard — never commit it
+      - key: AI_MODEL
+        value: gemini-3.8-flash
+      - key: AI_BASE_URL
+        value: https://generativelanguage.googleapis.com/v1beta/openai
+      - key: TRUST_PROXY
+        value: "1"

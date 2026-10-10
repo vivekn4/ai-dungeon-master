@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="AI Dungeon Master — a solo D&D-style adventure game. Create a hero, roll dice, and let the AI weave your legend." />
+  <meta name="author" content="Vivek Nair (VN)" />
+  <title>AI Dungeon Master — Your Solo Adventure Awaits</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="css/style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=IM+Fell+English:ital@0;1&display=swap" rel="stylesheet" />
+</head>
+<body>
+<!-- Crafted by Vivek Nair (VN) — github.com/vivekn4 -->
+  <canvas id="vfx-canvas" aria-hidden="true"></canvas>
+  <button id="sfx-toggle" type="button" class="sfx-toggle" aria-label="Toggle sound effects" title="Toggle sound effects">🔊</button>
+  <div class="ember ember-1"></div>
+  <div class="ember ember-2"></div>
+  <div class="ember ember-3"></div>
+
+  <!-- ============ SETUP SCREEN ============ -->
+  <main id="setup-screen" class="screen">
+    <div class="setup-card">
+      <div class="rune">⚔️</div>
+      <h1>AI Dungeon Master</h1>
+      <p class="tagline">A solo tabletop adventure, woven by magic (and a free AI).</p>
+
+      <label class="field">
+        <span>Hero name</span>
+        <input id="hero-name" type="text" maxlength="40" placeholder="e.g. Kaelis Thornwhisper" autocomplete="off" />
+      </label>
+
+      <label class="field">
+        <span>Class</span>
+        <select id="hero-class">
+          <option value="Warrior">⚔️ Warrior — blade and bravery (40 HP)</option>
+          <option value="Rogue">🗡️ Rogue — shadows and daggers (26 HP)</option>
+          <option value="Mage">🔮 Mage — arcane fire (22 HP)</option>
+          <option value="Ranger">🏹 Ranger — bow and wilds (30 HP)</option>
+          <option value="Cleric">✨ Cleric — light and healing (32 HP)</option>
+        </select>
+      </label>
+
+      <label class="field">
+        <span>Setting</span>
+        <select id="setting-select">
+          <option value="the Forgotten Catacombs">🕳️ The Forgotten Catacombs</option>
+          <option value="the Dragon Coast">🐉 The Dragon Coast</option>
+          <option value="the Cursed Forest">🌲 The Cursed Forest</option>
+        </select>
+      </label>
+
+      <label class="field">
+        <span>…or invent your own realm <em>(optional)</em></span>
+        <input id="setting-custom" type="text" maxlength="80" placeholder="e.g. a floating sky-city of brass" autocomplete="off" />
+      </label>
+
+      <p id="setup-error" class="error" role="alert"></p>
+      <button id="start-btn" type="button" class="btn-primary">Begin the Adventure</button>
+      <p class="fine-print">Powered by the free Gemini API · Your heroic deeds are saved in this browser only</p>
+    </div>
+  </main>
+
+  <!-- ============ GAME SCREEN ============ -->
+  <main id="game-screen" class="screen hidden">
+    <header class="game-header">
+      <div class="hero-id">
+        <span class="hero-rune">🛡️</span>
+        <div>
+          <div id="char-name" class="hero-name">Hero</div>
+          <div id="char-sub" class="hero-sub">Warrior</div>
+        </div>
+      </div>
+      <button id="new-campaign-btn" type="button" class="btn-ghost">New Campaign</button>
+    </header>
+
+    <div class="game-layout">
+      <!-- Story column -->
+      <section class="story-col">
+        <div id="story-log" class="story-log" aria-live="polite"></div>
+        <div id="thinking" class="thinking hidden"><span class="dots"><span></span><span></span><span></span></span> The Dungeon Master is weaving…</div>
+        <div id="choice-buttons" class="choice-buttons"></div>
+        <div class="input-row">
+          <input id="action-input" type="text" maxlength="2000" placeholder="What do you do? (e.g. I draw my sword and charge…)" autocomplete="off" />
+          <button id="send-btn" type="button" class="btn-primary">Send</button>
+        </div>
+      </section>
+
+      <!-- Character panel -->
+      <aside class="panel">
+        <section class="panel-card">
+          <h2>❤️ Hit Points</h2>
+          <div class="hp-bar"><div id="hp-fill" class="hp-fill"></div></div>
+          <div id="hp-text" class="hp-text">40 / 40 HP</div>
+          <div class="hp-controls">
+            <button type="button" class="hp-btn" data-delta="-5">−5</button>
+            <button type="button" class="hp-btn" data-delta="-1">−1</button>
+            <button type="button" class="hp-btn heal" data-delta="1">+1</button>
+            <button type="button" class="hp-btn heal" data-delta="5">+5</button>
+          </div>
+        </section>
+
+        <section class="panel-card">
+          <h2>🎲 Dice Roller</h2>
+          <div class="dice-grid">
+            <button type="button" class="die-btn" data-sides="20">d20</button>
+            <button type="button" class="die-btn" data-sides="12">d12</button>
+            <button type="button" class="die-btn" data-sides="10">d10</button>
+            <button type="button" class="die-btn" data-sides="8">d8</button>
+            <button type="button" class="die-btn" data-sides="6">d6</button>
+            <button type="button" class="die-btn" data-sides="4">d4</button>
+          </div>
+          <div id="dice-result" class="dice-result">—</div>
+          <div class="dice-actions">
+            <button id="dice-send" type="button" class="btn-small" disabled>Send as action</button>
+            <button id="dice-insert" type="button" class="btn-small" disabled>Insert into input</button>
+          </div>
+        </section>
+
+        <section class="panel-card">
+          <h2>🎒 Inventory</h2>
+          <div class="add-row">
+            <input id="inv-input" type="text" maxlength="80" placeholder="Add an item…" autocomplete="off" />
+            <button id="inv-add-btn" type="button" class="btn-small">Add</button>
+          </div>
+          <ul id="inv-list" class="item-list"></ul>
+        </section>
+
+        <section class="panel-card">
+          <h2>📜 Quest Log</h2>
+          <div class="add-row">
+            <input id="quest-input" type="text" maxlength="120" placeholder="Add a quest…" autocomplete="off" />
+            <button id="quest-add-btn" type="button" class="btn-small">Add</button>
+          </div>
+          <ul id="quest-list" class="item-list"></ul>
+        </section>
+
+        <section class="panel-card">
+          <h2>💾 Saved Campaigns</h2>
+          <div class="save-slots">
+            <div class="save-row">
+              <span class="slot-name">Slot 1</span>
+              <button id="save-btn-0" type="button" class="btn-small">Save</button>
+              <button id="load-btn-0" type="button" class="btn-small" disabled>Load</button>
+              <span id="slot-status-0" class="slot-status">Empty</span>
+            </div>
+            <div class="save-row">
+              <span class="slot-name">Slot 2</span>
+              <button id="save-btn-1" type="button" class="btn-small">Save</button>
+              <button id="load-btn-1" type="button" class="btn-small" disabled>Load</button>
+              <span id="slot-status-1" class="slot-status">Empty</span>
+            </div>
+            <div class="save-row">
+              <span class="slot-name">Slot 3</span>
+              <button id="save-btn-2" type="button" class="btn-small">Save</button>
+              <button id="load-btn-2" type="button" class="btn-small" disabled>Load</button>
+              <span id="slot-status-2" class="slot-status">Empty</span>
+            </div>
+          </div>
+        </section>
+      </aside>
+    </div>
+  </main>
+
+  <footer style="text-align:center;padding:1.5rem 1rem 2.5rem;font-family:'IM Fell English',Georgia,serif;font-size:0.85rem;color:#9a8a6a;">
+    Designed &amp; built by <a href="https://github.com/vivekn4" style="color:#d4af37;text-decoration:none;">VN</a>
+  </footer>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
