@@ -333,6 +333,21 @@ app.post("/api/chat", chatLimiter, async (req, res) => {
 // 404 for unknown API routes (static files already handled above).
 app.use("/api", (_req, res) => res.status(404).json({ error: "Not found" }));
 
+// JSON error handler — body-parser failures (malformed JSON, oversized
+// bodies) must not fall through to Express's default HTML error page,
+// which leaks stack traces and absolute paths to API clients.
+// eslint-disable-next-line no-unused-vars
+app.use((err, _req, res, _next) => {
+  if (err?.type === "entity.too.large") {
+    return res.status(413).json({ error: "Request body is too large." });
+  }
+  if (err?.type === "entity.parse.failed" || err instanceof SyntaxError) {
+    return res.status(400).json({ error: "Request body must be valid JSON." });
+  }
+  log("error", { event: "unhandled_error", error: err?.message });
+  return res.status(500).json({ error: "Something went wrong. Try again in a moment." });
+});
+
 /* ------------------------------------------------------------------ */
 /* Boot + graceful shutdown                                            */
 /* ------------------------------------------------------------------ */
