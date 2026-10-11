@@ -1,5 +1,8 @@
 # ⚔️ AI Dungeon Master
 
+## Screenshot
+
+![Screenshot](assets/screenshot.png)
 ![AI Dungeon Master banner](assets/banner.jpg)
 
 ![Made by VN](https://img.shields.io/badge/made%20by-VN-blue)
@@ -8,8 +11,6 @@ A solo Dungeons & Dragons–style adventure game in your browser. Create a hero,
 
 **100% free to run** — powered by the free Gemini API. No build step, no bundler, no paid services.
 
-> ![Gameplay screenshot](docs/screenshot.png)
-> *Screenshot placeholder — replace `docs/screenshot.png` with a real capture of your adventure.*
 
 ## ✨ Features
 
