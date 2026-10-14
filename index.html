@@ -59,6 +59,7 @@
 
       <p id="setup-error" class="error" role="alert"></p>
       <button id="start-btn" type="button" class="btn-primary">Begin the Adventure</button>
+      <button id="resume-autosave-btn" type="button" class="btn-ghost hidden" style="margin-top:10px;width:100%;">↩ Resume Last Autosave</button>
       <p class="fine-print">Powered by the free Gemini API · Your heroic deeds are saved in this browser only</p>
     </div>
   </main>
@@ -94,11 +95,31 @@
           <h2>❤️ Hit Points</h2>
           <div class="hp-bar"><div id="hp-fill" class="hp-fill"></div></div>
           <div id="hp-text" class="hp-text">40 / 40 HP</div>
+          <div id="stats-line" class="stats-line">🪙 10 gold · ⭐ Level 1 · XP 0/100 · 🌀 Turn 0</div>
           <div class="hp-controls">
             <button type="button" class="hp-btn" data-delta="-5">−5</button>
             <button type="button" class="hp-btn" data-delta="-1">−1</button>
             <button type="button" class="hp-btn heal" data-delta="1">+1</button>
             <button type="button" class="hp-btn heal" data-delta="5">+5</button>
+          </div>
+        </section>
+
+        <section class="panel-card">
+          <h2>🎯 Objectives</h2>
+          <ul id="objective-list" class="item-list"></ul>
+          <p class="empty-note" style="margin:6px 0 0;">Complete them all to win the campaign.</p>
+        </section>
+
+        <section id="combat-card" class="panel-card combat-card hidden">
+          <h2>⚔️ Combat</h2>
+          <div id="foe-name" class="foe-name">Foe</div>
+          <div class="hp-bar"><div id="foe-hp-fill" class="hp-fill"></div></div>
+          <div id="foe-hp-text" class="hp-text">—</div>
+          <p class="combat-note">The dice decide — the DM only narrates the outcome.</p>
+          <div class="combat-actions">
+            <button id="combat-attack" type="button" class="btn-small">⚔️ Attack</button>
+            <button id="combat-defend" type="button" class="btn-small">🛡️ Defend</button>
+            <button id="combat-flee" type="button" class="btn-small">💨 Flee</button>
           </div>
         </section>
 
@@ -138,6 +159,11 @@
         </section>
 
         <section class="panel-card">
+          <h2>🏆 Honors</h2>
+          <ul id="achievement-list" class="item-list"></ul>
+        </section>
+
+        <section class="panel-card">
           <h2>💾 Saved Campaigns</h2>
           <div class="save-slots">
             <div class="save-row">
@@ -159,10 +185,14 @@
               <span id="slot-status-2" class="slot-status">Empty</span>
             </div>
           </div>
+          <p class="slot-status" style="margin-top:10px;">Autosaves after every reply — resume anytime from the setup screen.</p>
+          <button id="chronicle-btn" type="button" class="btn-small" style="margin-top:8px;">📜 Export Chronicle (.md)</button>
         </section>
       </aside>
     </div>
   </main>
+
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
   <footer style="text-align:center;padding:1.5rem 1rem 2.5rem;font-family:'IM Fell English',Georgia,serif;font-size:0.85rem;color:#9a8a6a;">
     Designed &amp; built by <a href="https://github.com/vivekn4" style="color:#d4af37;text-decoration:none;">VN</a>
