@@ -4,7 +4,7 @@
  * Zero-build vanilla JS (ES module). All pure logic lives in logic.js
  * so it can be unit-tested in Node.
  */
-import { rollDie, clampHp, parseChoices, FALLBACK_CHOICES, CLASS_MAX_HP, escapeHtml } from "./logic.js";
+import { rollDie, clampHp, parseChoices, parseStateBlock, stripStateBlock, applyStateDeltas, resolveCombatRound, pickObjectives, checkAchievements, formatChronicle, xpForNextLevel, FALLBACK_CHOICES, CLASS_MAX_HP, CLASS_STARTING_KIT, ACHIEVEMENTS, escapeHtml } from "./logic.js";
 import { Sfx } from "./sfx.js";
 import { Vfx } from "./vfx.js";
 
@@ -13,14 +13,18 @@ import { Vfx } from "./vfx.js";
 /* ---------------------------------------------------------------- */
 
 const SAVE_KEY = "aidm_saves_v1";
+const AUTOSAVE_KEY = "aidm_autosave_v1";
 
 const state = {
   started: false,
   busy: false,
+  dead: false,
+  victory: false,
   setup: { name: "", charClass: "Warrior", setting: "" },
   // { role: 'user'|'assistant', content: string, hidden?: boolean }
   messages: [],
-  character: { hp: 40, maxHp: 40, inventory: [], quests: [] }, // quests: {text, done}
+  // quests: {text, done}; foe: null | {name, hp, maxHp, attack}
+  character: { hp: 40, maxHp: 40, gold: 10, xp: 0, level: 1, inventory: [], quests: [], foe: null, objectives: [], achievements: [], turns: 0, rolls: 0, nat20s: 0, combatWins: 0 },
   lastRoll: null, // { sides, value }
 };
 
@@ -38,12 +42,16 @@ const ui = {};
 function cacheDom() {
   [
     "setup-screen", "game-screen", "hero-name", "hero-class", "setting-select",
-    "setting-custom", "start-btn", "setup-error",
+    "setting-custom", "start-btn", "setup-error", "resume-autosave-btn",
     "char-name", "char-sub", "new-campaign-btn",
     "story-log", "thinking", "choice-buttons", "action-input", "send-btn",
-    "hp-fill", "hp-text", "inv-input", "inv-add-btn", "inv-list",
+    "hp-fill", "hp-text", "stats-line", "inv-input", "inv-add-btn", "inv-list",
     "quest-input", "quest-add-btn", "quest-list",
+    "objective-list", "achievement-list",
+    "combat-card", "foe-name", "foe-hp-fill", "foe-hp-text",
+    "combat-attack", "combat-defend", "combat-flee",
     "dice-result", "dice-send", "dice-insert", "sfx-toggle",
+    "chronicle-btn", "toast",
   ].forEach((id) => { ui[id] = $(id); });
   ui.hpBtns = Array.from(document.querySelectorAll(".hp-btn"));
   ui.dieBtns = Array.from(document.querySelectorAll(".die-btn"));
@@ -133,7 +141,7 @@ function renderLogFromState() {
     if (m.hidden) continue;
     if (m.role === "user") appendUserMessage(m.content);
     else {
-      const { story } = parseChoices(m.content);
+      const { story } = parseChoices(stripStateBlock(m.content));
       const div = document.createElement("div");
       div.className = "message dm";
       div.innerHTML = `<div class="bubble dm-text"></div>`;
@@ -145,7 +153,7 @@ function renderLogFromState() {
   // Restore quick choices from the latest AI reply, if any.
   const lastAi = [...state.messages].reverse().find((m) => m.role === "assistant" && !m.hidden);
   if (lastAi) {
-    const { choices } = parseChoices(lastAi.content);
+    const { choices } = parseChoices(stripStateBlock(lastAi.content));
     renderChoices(choices || FALLBACK_CHOICES);
   } else {
     renderChoices([]);
@@ -201,10 +209,12 @@ async function requestDmReply() {
     if (!res.ok) throw new Error(data?.error || `Request failed (HTTP ${res.status})`);
     if (!data?.reply) throw new Error("The Dungeon Master fell silent. Try again.");
 
-    const { story, choices } = parseChoices(data.reply);
+    const { story, choices } = parseChoices(stripStateBlock(data.reply));
     state.messages.push({ role: "assistant", content: data.reply });
+    state.character.turns += 1;
     await appendAiMessage(story, true);
     renderChoices(choices || FALLBACK_CHOICES);
+    applyDmConsequences(parseStateBlock(data.reply));
   } catch (err) {
     Sfx.errorBuzz();
     appendSystemMessage(`⚠️ ${err.message || "Something went wrong."}`);
@@ -219,6 +229,10 @@ async function requestDmReply() {
 async function sendPlayerAction(text) {
   const clean = String(text ?? "").trim();
   if (!clean || state.busy || !state.started) return;
+  if (state.dead) {
+    appendSystemMessage("💀 Your hero has fallen. Start a New Campaign to rise again.");
+    return;
+  }
   Sfx.whoosh();
   state.busy = true;
   ui["send-btn"].disabled = true;
@@ -226,6 +240,112 @@ async function sendPlayerAction(text) {
   appendUserMessage(clean);
   ui["action-input"].value = "";
   await requestDmReply();
+}
+
+/* ---------------------------------------------------------------- */
+/* Consequences: apply the DM's STATE block, then check milestones   */
+/* ---------------------------------------------------------------- */
+
+/** Stats snapshot for the achievement checker. */
+function achievementStats() {
+  const c = state.character;
+  return {
+    rolls: c.rolls || 0,
+    nat20s: c.nat20s || 0,
+    turns: c.turns || 0,
+    inventoryCount: (c.inventory || []).length,
+    questsDone: (c.quests || []).filter((q) => q.done).length,
+    level: c.level || 1,
+    combatWins: c.combatWins || 0,
+  };
+}
+
+let toastTimer = null;
+const toastQueue = [];
+function showToast(text) {
+  toastQueue.push(text);
+  if (toastTimer) return;
+  const next = () => {
+    const t = toastQueue.shift();
+    if (!t) { toastTimer = null; return; }
+    ui.toast.textContent = t;
+    ui.toast.classList.remove("hidden");
+    toastTimer = setTimeout(() => {
+      ui.toast.classList.add("hidden");
+      toastTimer = setTimeout(next, 350);
+    }, 3800);
+  };
+  next();
+}
+
+/** Award newly-earned achievements with toast + sparkle. */
+function checkAndAwardAchievements() {
+  const newly = checkAchievements(achievementStats(), state.character.achievements || []);
+  if (newly.length === 0) return;
+  state.character.achievements = [...(state.character.achievements || []), ...newly];
+  for (const id of newly) {
+    const a = ACHIEVEMENTS.find((x) => x.id === id);
+    if (a) showToast(`🏆 Honor earned: ${a.name} — ${a.desc}`);
+  }
+  if (newly.length > 0) Sfx.successChime();
+  renderAchievements();
+}
+
+/** Apply STATE deltas (XP/HP/gold/items) with level-up fanfare. */
+function applyDeltas(deltas) {
+  const { character, events } = applyStateDeltas(state.character, deltas);
+  state.character = character;
+  if (events.levelsGained > 0) {
+    Sfx.levelUp();
+    Vfx.confetti(window.innerWidth / 2, window.innerHeight * 0.3);
+    appendSystemMessage(`⭐ LEVEL UP! You are now level ${character.level} (+5 max HP, +5 HP).`);
+  }
+  renderCharacter();
+  if (events.died) handleDeath();
+  return events;
+}
+
+/** Full consequence pass for one DM reply: STATE, foe, objectives, honors. */
+function applyDmConsequences(deltas) {
+  applyDeltas(deltas);
+  if (state.dead) { autoSave(); return; }
+  if (deltas.foe !== undefined) {
+    state.character.foe = deltas.foe;
+    if (deltas.foe) {
+      appendSystemMessage(`⚔️ A foe appears: ${deltas.foe.name} (${deltas.foe.hp} HP)! Use the Combat panel — the dice decide.`);
+      Sfx.diceRoll();
+    }
+    renderCombat();
+  }
+  if (deltas.objectiveDone) {
+    const obj = (state.character.objectives || []).find((o) => o.id === deltas.objectiveDone);
+    if (obj && !obj.done) {
+      obj.done = true;
+      Sfx.fanfare();
+      Vfx.confetti(window.innerWidth / 2, window.innerHeight * 0.35);
+      appendSystemMessage(`🎯 Objective complete: ${obj.label}`);
+      renderObjectives();
+      if ((state.character.objectives || []).length > 0 && state.character.objectives.every((o) => o.done) && !state.victory) {
+        state.victory = true;
+        appendSystemMessage(`🏆 VICTORY! ${state.setup.name} has completed every objective and the realm sings of this legend! Free play continues — or start a New Campaign.`);
+        Sfx.fanfare();
+        Vfx.confetti(window.innerWidth / 2, window.innerHeight * 0.3, { count: 160 });
+      }
+    }
+  }
+  checkAndAwardAchievements();
+  autoSave();
+}
+
+function handleDeath() {
+  if (state.dead) return;
+  state.dead = true;
+  state.character.foe = null;
+  Sfx.errorBuzz();
+  Vfx.shake(12, 420);
+  appendSystemMessage(`💀 ${state.setup.name} has fallen… The tale ends here. Start a New Campaign to rise again, or load a save.`);
+  renderCombat();
+  autoSave();
 }
 
 /* ---------------------------------------------------------------- */
@@ -251,6 +371,8 @@ function startCampaign() {
   }
 
   const maxHp = CLASS_MAX_HP[charClass] || 30;
+  const kit = CLASS_STARTING_KIT[charClass] || { items: [], gold: 10 };
+  const objectives = pickObjectives(2);
   state.setup = { name, charClass, setting };
   state.messages = [
     {
@@ -259,12 +381,16 @@ function startCampaign() {
       content:
         `CAMPAIGN SETUP — do not repeat this back, just begin the adventure. ` +
         `Hero: "${name}", a ${charClass}. Setting: ${setting}. ` +
+        `Campaign objectives (win by completing ALL of them; report each with an OBJECTIVE line when truly complete): ` +
+        objectives.map((o) => `${o.id}: ${o.label}`).join("; ") + `. ` +
         `Open with an exciting first scene worthy of a legend.`,
     },
   ];
-  state.character = { hp: maxHp, maxHp, inventory: [], quests: [] };
+  state.character = { hp: maxHp, maxHp, gold: kit.gold, xp: 0, level: 1, inventory: [...kit.items], quests: [], foe: null, objectives, achievements: [], turns: 0, rolls: 0, nat20s: 0, combatWins: 0 };
   state.lastRoll = null;
   state.started = true;
+  state.dead = false;
+  state.victory = false;
   state.busy = true;
   ui["send-btn"].disabled = true;
 
@@ -292,10 +418,13 @@ function newCampaign() {
   Sfx.whoosh();
   state.started = false;
   state.busy = false;
+  state.dead = false;
+  state.victory = false;
   state.messages = [];
   state.lastRoll = null;
   ui["action-input"].value = "";
   showScreen("setup");
+  refreshResumeButton();
   ui["hero-name"].focus();
 }
 
@@ -305,8 +434,72 @@ function newCampaign() {
 
 function renderCharacter() {
   renderHp();
+  renderStats();
   renderInventory();
   renderQuests();
+  renderObjectives();
+  renderCombat();
+  renderAchievements();
+}
+
+function renderStats() {
+  const c = state.character;
+  ui["stats-line"].textContent =
+    `🪙 ${c.gold ?? 0} gold · ⭐ Level ${c.level ?? 1} · XP ${c.xp ?? 0}/${xpForNextLevel(c.level ?? 1)} · 🌀 Turn ${c.turns ?? 0}`;
+}
+
+function renderObjectives() {
+  ui["objective-list"].innerHTML = "";
+  const objs = state.character.objectives || [];
+  if (objs.length === 0) {
+    const li = document.createElement("li");
+    li.className = "empty-note";
+    li.textContent = "No objectives in this campaign.";
+    ui["objective-list"].appendChild(li);
+    return;
+  }
+  objs.forEach((o) => {
+    const li = document.createElement("li");
+    li.className = "quest-item" + (o.done ? " done" : "");
+    const span = document.createElement("span");
+    span.textContent = `${o.done ? "✓ " : "○ "}${o.label}`;
+    li.appendChild(span);
+    ui["objective-list"].appendChild(li);
+  });
+}
+
+function renderCombat() {
+  const foe = state.character.foe;
+  ui["combat-card"].classList.toggle("hidden", !foe);
+  if (!foe) return;
+  ui["foe-name"].textContent = `${foe.name} — ATK ${foe.attack}`;
+  const pct = foe.maxHp > 0 ? Math.max(0, Math.min(100, (foe.hp / foe.maxHp) * 100)) : 0;
+  ui["foe-hp-fill"].style.width = `${pct}%`;
+  ui["foe-hp-text"].textContent = `${foe.hp} / ${foe.maxHp} HP`;
+  const disabled = state.busy || state.dead;
+  for (const id of ["combat-attack", "combat-defend", "combat-flee"]) ui[id].disabled = disabled;
+}
+
+function renderAchievements() {
+  ui["achievement-list"].innerHTML = "";
+  const earned = state.character.achievements || [];
+  if (earned.length === 0) {
+    const li = document.createElement("li");
+    li.className = "empty-note";
+    li.textContent = "No honors yet — adventure awaits!";
+    ui["achievement-list"].appendChild(li);
+    return;
+  }
+  for (const id of earned) {
+    const a = ACHIEVEMENTS.find((x) => x.id === id);
+    if (!a) continue;
+    const li = document.createElement("li");
+    li.className = "quest-item done";
+    const span = document.createElement("span");
+    span.textContent = `🏆 ${a.name} — ${a.desc}`;
+    li.appendChild(span);
+    ui["achievement-list"].appendChild(li);
+  }
 }
 
 function renderHp() {
@@ -429,6 +622,9 @@ function rollDice(sides) {
       clearInterval(anim);
       const value = rollDie(sides);
       state.lastRoll = { sides, value };
+      state.character.rolls = (state.character.rolls || 0) + 1;
+      if (sides === 20 && value === 20) state.character.nat20s = (state.character.nat20s || 0) + 1;
+      checkAndAwardAchievements();
       resultEl.textContent = String(value);
       resultEl.classList.remove("rolling");
       resultEl.classList.remove("crit");
@@ -467,7 +663,71 @@ function insertRoll() {
 }
 
 /* ---------------------------------------------------------------- */
-/* Save / load (3 localStorage slots)                                */
+/* Combat — dice resolved here, DM narrates the outcome only          */
+/* ---------------------------------------------------------------- */
+
+async function doCombatRound(action) {
+  const foe = state.character.foe;
+  if (!foe || state.busy || !state.started || state.dead) return;
+  state.busy = true;
+  ui["send-btn"].disabled = true;
+  renderCombat();
+  Sfx.diceRoll();
+
+  const result = resolveCombatRound({
+    action,
+    playerHp: state.character.hp,
+    playerLevel: state.character.level,
+    foe,
+  });
+  state.character.hp = result.playerHp;
+  state.character.foe = result.foe;
+  renderHp();
+  renderStats();
+
+  for (const line of result.log) appendSystemMessage(`⚔️ ${line}`);
+  if (result.outcome === "victory") {
+    state.character.combatWins = (state.character.combatWins || 0) + 1;
+    state.character.foe = null;
+    Sfx.fanfare();
+    Vfx.confetti(window.innerWidth / 2, window.innerHeight * 0.3);
+    applyDeltas({ found: true, hp: 0, gold: 0, xp: 25, itemsAdded: [], itemsRemoved: [], foe: undefined, objectiveDone: null });
+    checkAndAwardAchievements();
+  } else if (result.outcome === "fled") {
+    state.character.foe = null;
+    Sfx.whoosh();
+  } else if (result.outcome === "defeat") {
+    Sfx.errorBuzz();
+    Vfx.shake(12, 420);
+    renderCombat();
+    handleDeath();
+    state.busy = false;
+    ui["send-btn"].disabled = false;
+    return;
+  } else {
+    if (state.character.hp <= 0) { // safety net; resolveCombatRound already reports defeat
+      handleDeath();
+      state.busy = false;
+      ui["send-btn"].disabled = false;
+      return;
+    }
+    if (state.character.hp <= state.character.maxHp * 0.3) Vfx.shake(6, 300);
+    else Sfx.diceSettle();
+  }
+  renderCombat();
+  autoSave();
+
+  // Hidden combat report: the DM narrates the decided numbers, never re-rolls.
+  state.messages.push({
+    role: "user",
+    hidden: true,
+    content: `[Combat round resolved by the game dice — narrate EXACTLY this, do not change any numbers: ${result.log.join(" ")}] End with CHOICES and a STATE block as usual.`,
+  });
+  await requestDmReply();
+}
+
+/* ---------------------------------------------------------------- */
+/* Save / load (3 localStorage slots + autosave)                     */
 /* ---------------------------------------------------------------- */
 
 function readSaves() {
@@ -484,21 +744,70 @@ function writeSaves(saves) {
   localStorage.setItem(SAVE_KEY, JSON.stringify(saves));
 }
 
-function saveSlot(i) {
-  if (!state.started) return;
-  const saves = readSaves();
-  saves[i] = {
-    version: 1,
+/** Snapshot the full campaign state. Version 2 adds gold/XP/foe/objectives/achievements. */
+function snapshotCampaign() {
+  return {
+    version: 2,
     savedAt: new Date().toISOString(),
     setup: { ...state.setup },
     messages: state.messages.map((m) => ({ ...m })),
     character: {
       hp: state.character.hp,
       maxHp: state.character.maxHp,
-      inventory: [...state.character.inventory],
-      quests: state.character.quests.map((q) => ({ ...q })),
+      gold: state.character.gold ?? 0,
+      xp: state.character.xp ?? 0,
+      level: state.character.level ?? 1,
+      inventory: [...(state.character.inventory || [])],
+      quests: (state.character.quests || []).map((q) => ({ ...q })),
+      foe: state.character.foe ? { ...state.character.foe } : null,
+      objectives: (state.character.objectives || []).map((o) => ({ ...o })),
+      achievements: [...(state.character.achievements || [])],
+      turns: state.character.turns ?? 0,
+      rolls: state.character.rolls ?? 0,
+      nat20s: state.character.nat20s ?? 0,
+      combatWins: state.character.combatWins ?? 0,
     },
+    dead: state.dead,
+    victory: state.victory,
   };
+}
+
+/** Restore a snapshot (migrates version-1 saves with fresh defaults). */
+function restoreCampaign(s) {
+  state.setup = { ...s.setup };
+  state.messages = (s.messages || []).map((m) => ({ ...m }));
+  const c = s.character || {};
+  state.character = {
+    hp: clampHp(c.hp ?? 30, c.maxHp ?? 30),
+    maxHp: Math.max(1, Math.floor(Number(c.maxHp) || 30)),
+    gold: Math.max(0, Math.floor(Number(c.gold) || 0)),
+    xp: Math.max(0, Math.floor(Number(c.xp) || 0)),
+    level: Math.max(1, Math.floor(Number(c.level) || 1)),
+    inventory: Array.isArray(c.inventory) ? [...c.inventory] : [],
+    quests: Array.isArray(c.quests)
+      ? c.quests.map((q) => ({ text: String(q.text || ""), done: !!q.done }))
+      : [],
+    foe: c.foe ? { ...c.foe } : null,
+    objectives: Array.isArray(c.objectives) && c.objectives.length > 0
+      ? c.objectives.map((o) => ({ id: String(o.id || ""), label: String(o.label || ""), done: !!o.done }))
+      : pickObjectives(2),
+    achievements: Array.isArray(c.achievements) ? [...c.achievements] : [],
+    turns: Math.max(0, Math.floor(Number(c.turns) || 0)),
+    rolls: Math.max(0, Math.floor(Number(c.rolls) || 0)),
+    nat20s: Math.max(0, Math.floor(Number(c.nat20s) || 0)),
+    combatWins: Math.max(0, Math.floor(Number(c.combatWins) || 0)),
+  };
+  state.dead = !!s.dead;
+  state.victory = !!s.victory;
+  state.lastRoll = null;
+  state.started = true;
+  state.busy = false;
+}
+
+function saveSlot(i) {
+  if (!state.started) return;
+  const saves = readSaves();
+  saves[i] = snapshotCampaign();
   try {
     writeSaves(saves);
   } catch {
@@ -515,23 +824,52 @@ function saveSlot(i) {
   appendSystemMessage(`💾 Campaign saved to slot ${i + 1}.`);
 }
 
+/** Silent autosave after every reply / combat round. Never throws. */
+function autoSave() {
+  if (!state.started) return;
+  try {
+    localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(snapshotCampaign()));
+  } catch {
+    /* storage full/blocked — manual slots still work */
+  }
+}
+
+function readAutosave() {
+  try {
+    const raw = localStorage.getItem(AUTOSAVE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function refreshResumeButton() {
+  const s = readAutosave();
+  ui["resume-autosave-btn"].classList.toggle("hidden", !s);
+}
+
+function loadAutosave() {
+  const s = readAutosave();
+  if (!s) return;
+  restoreCampaign(s);
+  ui["send-btn"].disabled = false;
+  ui["char-name"].textContent = state.setup.name || "Hero";
+  ui["char-sub"].textContent = `${state.setup.charClass || ""} · ${state.setup.setting || ""}`;
+  ui["dice-result"].textContent = "—";
+  ui["dice-send"].disabled = true;
+  ui["dice-insert"].disabled = true;
+  renderCharacter();
+  showScreen("game");
+  Sfx.whoosh();
+  renderLogFromState();
+  appendSystemMessage("📜 Autosave restored. The adventure continues…");
+}
+
 function loadSlot(i) {
   const saves = readSaves();
   const s = saves[i];
   if (!s) return;
-  state.setup = { ...s.setup };
-  state.messages = (s.messages || []).map((m) => ({ ...m }));
-  state.character = {
-    hp: clampHp(s.character?.hp ?? 30, s.character?.maxHp ?? 30),
-    maxHp: Math.max(1, Math.floor(Number(s.character?.maxHp) || 30)),
-    inventory: Array.isArray(s.character?.inventory) ? [...s.character.inventory] : [],
-    quests: Array.isArray(s.character?.quests)
-      ? s.character.quests.map((q) => ({ text: String(q.text || ""), done: !!q.done }))
-      : [],
-  };
-  state.lastRoll = null;
-  state.started = true;
-  state.busy = false;
+  restoreCampaign(s);
   ui["send-btn"].disabled = false;
   ui["char-name"].textContent = state.setup.name || "Hero";
   ui["char-sub"].textContent = `${state.setup.charClass || ""} · ${state.setup.setting || ""}`;
@@ -562,6 +900,33 @@ function renderSlotStatuses() {
     }
     saveBtn.disabled = !state.started;
   });
+}
+
+/* ---------------------------------------------------------------- */
+/* Chronicle export                                                  */
+/* ---------------------------------------------------------------- */
+
+function exportChronicle() {
+  if (!state.started && state.messages.length === 0) return;
+  const md = formatChronicle({
+    setup: state.setup,
+    messages: state.messages,
+    character: state.character,
+    objectives: state.character.objectives,
+    achievements: state.character.achievements,
+  });
+  const safeName = (state.setup.name || "hero").replace(/[^a-z0-9-_]+/gi, "-").toLowerCase();
+  const blob = new Blob([md], { type: "text/markdown" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `aidm-chronicle-${safeName}.md`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  Sfx.successChime();
+  appendSystemMessage("📜 Chronicle exported — your tale, saved as markdown.");
 }
 
 /* ---------------------------------------------------------------- */
@@ -640,6 +1005,13 @@ function wireEvents() {
   ui["dice-send"].addEventListener("click", sendRoll);
   ui["dice-insert"].addEventListener("click", insertRoll);
 
+  ui["combat-attack"].addEventListener("click", () => doCombatRound("attack"));
+  ui["combat-defend"].addEventListener("click", () => doCombatRound("defend"));
+  ui["combat-flee"].addEventListener("click", () => doCombatRound("flee"));
+
+  ui["chronicle-btn"].addEventListener("click", exportChronicle);
+  ui["resume-autosave-btn"].addEventListener("click", loadAutosave);
+
   ui["inv-add-btn"].addEventListener("click", addInventory);
   ui["inv-input"].addEventListener("keydown", (e) => {
     if (e.key === "Enter") addInventory();
@@ -665,6 +1037,9 @@ function wireEvents() {
         Sfx.levelUp();
         const r = btn.getBoundingClientRect();
         Vfx.confetti(r.left + r.width / 2, r.top, { count: 26 });
+        // Code-owned quest reward: +10 XP (level-ups handled by applyDeltas).
+        applyDeltas({ found: true, hp: 0, gold: 0, xp: 10, itemsAdded: [], itemsRemoved: [], foe: undefined, objectiveDone: null });
+        checkAndAwardAchievements();
       }
     } else {
       state.character.quests.splice(idx, 1);
@@ -685,6 +1060,7 @@ function init() {
   wireGlobalFx();
   wireEvents();
   renderSlotStatuses();
+  refreshResumeButton();
   showScreen("setup");
 }
 

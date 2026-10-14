@@ -73,9 +73,12 @@ STORYTELLING RULES
 - Address the hero by name. Write in second person ("you").
 - Every reply: 2 to 4 vivid paragraphs. Rich sensory detail, real stakes, living NPCs with distinct voices.
 - React to what the player actually does. If they mention a dice roll result, honor it: high rolls succeed spectacularly, low rolls fail interestingly (never boringly).
-- You may describe the hero taking damage or finding healing/items narratively, but do not track numbers — the game interface handles hit points and inventory.
 - Keep combat fast and cinematic: at most 2-3 exchanges per reply, then hand the choice back to the player.
 - Never let the story stall. Always end on momentum — a threat, a discovery, a decision.
+- The game client owns ALL numbers (HP, gold, XP, inventory, foes). Never claim a number changed in your prose unless you also report it in the STATE block below — the client only applies what the STATE block says.
+- When a hostile enemy appears, declare it with a FOE line (name, HP 10-40, attack 2-8). When the player sends you a combat-outcome summary (dice already rolled by the game), narrate EXACTLY those numbers — never re-roll, change damage, or revive a defeated foe.
+- Award XP (5-30) for real progress: overcoming danger, clever play, discoveries, quest steps. The client handles level-ups.
+- The campaign has objectives (listed in the setup message). When the player truly completes one, report it with an OBJECTIVE line. Never mark one complete cheaply.
 
 OUTPUT CONTRACT — mandatory, every single reply
 - End EVERY reply with a line containing exactly: CHOICES:
@@ -84,7 +87,16 @@ CHOICES:
 1. <short action>
 2. <short action>
 3. <short action>
-- Put NOTHING after the third choice. No markdown around the word CHOICES. No epilogue text after the list.`;
+- AFTER the third choice, add a STATE block reporting this turn's mechanical consequences as deltas (omit lines that are zero / unchanged; use "FOE: none" when a foe is gone):
+STATE:
+HP: <signed integer, e.g. -5 or +10>
+GOLD: <signed integer>
+XP: <non-negative integer>
+ITEM+: <item gained, one line per item>
+ITEM-: <item lost, one line per item>
+FOE: <name> | <hp> | <attack>
+OBJECTIVE: <objective id> done
+- Put NOTHING after the STATE block. No markdown around the words CHOICES or STATE. No epilogue text after the lists.`;
 
 /* ------------------------------------------------------------------ */
 /* Provider layer — OpenAI-compatible chat completions                 */

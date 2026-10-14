@@ -11,6 +11,17 @@ import {
   parseChoices,
   FALLBACK_CHOICES,
   CLASS_MAX_HP,
+  CLASS_STARTING_KIT,
+  xpForNextLevel,
+  OBJECTIVE_POOL,
+  pickObjectives,
+  parseStateBlock,
+  stripStateBlock,
+  applyStateDeltas,
+  resolveCombatRound,
+  ACHIEVEMENTS,
+  checkAchievements,
+  formatChronicle,
   escapeHtml,
 } from "../js/logic.js";
 
@@ -121,6 +132,146 @@ test("escapes HTML special chars", () => {
     "&lt;script&gt;alert(&quot;x&quot;) &amp; &#39;y&#39;&lt;/script&gt;"
   );
   assert.equal(escapeHtml(null), "");
+});
+
+console.log("starting kits + XP curve");
+test("every class has a kit with items and gold", () => {
+  for (const cls of Object.keys(CLASS_MAX_HP)) {
+    const kit = CLASS_STARTING_KIT[cls];
+    assert.ok(kit && kit.items.length >= 1, `${cls}: no kit items`);
+    assert.ok(Number.isInteger(kit.gold) && kit.gold >= 0, `${cls}: bad gold`);
+  }
+});
+test("xpForNextLevel grows with level", () => {
+  assert.equal(xpForNextLevel(1), 100);
+  assert.equal(xpForNextLevel(2), 150);
+  assert.ok(xpForNextLevel(5) > xpForNextLevel(4));
+});
+
+console.log("objectives");
+test("pickObjectives draws distinct objectives", () => {
+  const picked = pickObjectives(2, () => 0.0);
+  assert.equal(picked.length, 2);
+  assert.notEqual(picked[0].id, picked[1].id);
+  assert.ok(picked.every((o) => o.done === false));
+  assert.ok(picked.every((o) => OBJECTIVE_POOL.some((p) => p.id === o.id)));
+});
+
+console.log("STATE block parser");
+test("parses HP/GOLD/XP deltas, items, foe, objective", () => {
+  const raw = `Story.\n\nCHOICES:\n1. Fight\n2. Flee\n3. Hide\nSTATE:\nHP: -5\nGOLD: +20\nXP: +15\nITEM+: Torch\nITEM-: Rusty Key\nFOE: Goblin Chief | 24 | 6\nOBJECTIVE: slay-boss done`;
+  const s = parseStateBlock(raw);
+  assert.equal(s.found, true);
+  assert.equal(s.hp, -5);
+  assert.equal(s.gold, 20);
+  assert.equal(s.xp, 15);
+  assert.deepEqual(s.itemsAdded, ["Torch"]);
+  assert.deepEqual(s.itemsRemoved, ["Rusty Key"]);
+  assert.deepEqual(s.foe, { name: "Goblin Chief", hp: 24, maxHp: 24, attack: 6 });
+  assert.equal(s.objectiveDone, "slay-boss");
+});
+test("FOE: none clears; unknown keys ignored; missing block -> found false", () => {
+  assert.equal(parseStateBlock("No block here").found, false);
+  const s = parseStateBlock("STATE:\nFOE: none\nBOGUS: 42\nHP: junk");
+  assert.equal(s.foe, null);
+  assert.equal(s.hp, 0);
+});
+test("stripStateBlock removes STATE but keeps CHOICES", () => {
+  const raw = `Story.\nSTATE:\nHP: -5\nCHOICES:\n1. Go\n2. Stay\n3. Hide`;
+  const stripped = stripStateBlock(raw);
+  assert.ok(!stripped.includes("HP: -5"), stripped);
+  assert.ok(stripped.includes("CHOICES:"), stripped);
+  assert.ok(stripped.includes("Story."), stripped);
+});
+
+console.log("applyStateDeltas");
+const baseChar = () => ({ hp: 30, maxHp: 40, gold: 10, xp: 0, level: 1, inventory: ["Torch"], quests: [] });
+test("applies deltas, clamps HP/gold, adds/removes items", () => {
+  const { character, events } = applyStateDeltas(baseChar(), {
+    found: true, hp: -5, gold: 20, xp: 0, itemsAdded: ["Rope"], itemsRemoved: ["Torch"], foe: undefined, objectiveDone: null,
+  });
+  assert.equal(character.hp, 25);
+  assert.equal(character.gold, 30);
+  assert.deepEqual(character.inventory, ["Rope"]);
+  assert.equal(events.died, false);
+});
+test("level-up at threshold: +5 max HP, +5 heal, XP carries over", () => {
+  const { character, events } = applyStateDeltas(baseChar(), {
+    found: true, hp: 0, gold: 0, xp: 110, itemsAdded: [], itemsRemoved: [], foe: undefined, objectiveDone: null,
+  });
+  assert.equal(events.levelsGained, 1);
+  assert.equal(character.level, 2);
+  assert.equal(character.maxHp, 45);
+  assert.equal(character.xp, 10);
+  assert.equal(character.hp, 35);
+});
+test("death is reported when HP hits 0", () => {
+  const { events } = applyStateDeltas(baseChar(), {
+    found: true, hp: -99, gold: 0, xp: 0, itemsAdded: [], itemsRemoved: [], foe: undefined, objectiveDone: null,
+  });
+  assert.equal(events.died, true);
+});
+test("no STATE block is a no-op", () => {
+  const { character } = applyStateDeltas(baseChar(), { found: false });
+  assert.equal(character.hp, 30);
+});
+
+console.log("combat resolution");
+const foe = () => ({ name: "Goblin", hp: 12, maxHp: 12, attack: 3 });
+test("attack can kill the foe (scripted rolls)", () => {
+  // d20 hit (>=9), d8 damage 8 + level 1 = 9... foe has 12 HP; use max damage via two rounds instead.
+  const r1 = resolveCombatRound({ action: "attack", playerHp: 30, playerLevel: 5, foe: foe(), roll: (s) => (s === 20 ? 15 : s === 8 ? 8 : 1) });
+  assert.equal(r1.outcome, "victory"); // 8 + 5 = 13 >= 12
+  assert.equal(r1.foe.hp, 0);
+});
+test("miss still draws retaliation; defend halves it", () => {
+  const roll = (s) => (s === 20 ? 1 : 6); // miss (1), enemy d6 = 6 + 3 = 9
+  const undef = resolveCombatRound({ action: "attack", playerHp: 30, playerLevel: 1, foe: foe(), roll });
+  assert.equal(undef.playerHp, 21);
+  const def = resolveCombatRound({ action: "defend", playerHp: 30, playerLevel: 1, foe: foe(), roll });
+  assert.equal(def.playerHp, 30 - Math.floor(9 / 2));
+});
+test("flee succeeds on high roll, fails on low roll", () => {
+  const ok = resolveCombatRound({ action: "flee", playerHp: 30, playerLevel: 1, foe: foe(), roll: () => 20 });
+  assert.equal(ok.outcome, "fled");
+  const bad = resolveCombatRound({ action: "flee", playerHp: 30, playerLevel: 1, foe: foe(), roll: () => 1 });
+  assert.equal(bad.outcome, "ongoing");
+  assert.ok(bad.playerHp < 30);
+});
+test("defeat when HP reaches 0", () => {
+  const r = resolveCombatRound({ action: "attack", playerHp: 2, playerLevel: 1, foe: foe(), roll: (s) => (s === 20 ? 1 : 6) });
+  assert.equal(r.outcome, "defeat");
+  assert.equal(r.playerHp, 0);
+});
+
+console.log("achievements");
+test("checkAchievements awards each once", () => {
+  assert.deepEqual(checkAchievements({ rolls: 1 }, []), ["first-roll"]);
+  assert.deepEqual(checkAchievements({ rolls: 1 }, ["first-roll"]), []);
+  const many = checkAchievements({ rolls: 5, nat20s: 1, turns: 30, inventoryCount: 12, questsDone: 4, level: 3, combatWins: 1 }, []);
+  assert.equal(many.length, ACHIEVEMENTS.length);
+});
+test("achievement ids are unique", () => {
+  assert.equal(new Set(ACHIEVEMENTS.map((a) => a.id)).size, ACHIEVEMENTS.length);
+});
+
+console.log("chronicle");
+test("formatChronicle renders hero, tale, and final state", () => {
+  const md = formatChronicle({
+    setup: { name: "Kael", charClass: "Warrior", setting: "the Cursed Forest" },
+    messages: [
+      { role: "user", content: "I enter the forest." },
+      { role: "assistant", content: "Shadows gather.\n\nCHOICES:\n1. Go\n2. Stay\n3. Hide\nSTATE:\nHP: -1" },
+    ],
+    character: { hp: 10, maxHp: 40, level: 1, gold: 5, inventory: ["Torch"], quests: [{ text: "Find water", done: true }] },
+    objectives: [{ id: "x", label: "Escape", done: true }],
+    achievements: ["first-roll"],
+  });
+  assert.ok(md.includes("# The Chronicle of Kael"));
+  assert.ok(md.includes("I enter the forest."));
+  assert.ok(md.includes("Shadows gather."));
+  assert.ok(!md.includes("STATE:"));
+  assert.ok(md.includes("First Roll"));
 });
 
 console.log(`\n${passed} tests passed${process.exitCode ? " (WITH FAILURES)" : ""}.`);
