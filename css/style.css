@@ -394,6 +394,52 @@ select option { background: #120d1d; }
 .mini-btn.danger:hover { border-color: var(--blood); }
 
 .save-slots { display: flex; flex-direction: column; gap: 10px; }
+
+/* ---------- New in v1.1: stats / objectives / combat / honors / toast ---------- */
+.stats-line {
+  text-align: center;
+  margin: 8px 0 2px;
+  font-size: 14px;
+  color: var(--gold-bright);
+  letter-spacing: 0.02em;
+}
+.foe-name {
+  font-family: Cinzel, Georgia, serif;
+  color: #ff9a8a;
+  font-size: 17px;
+  margin-bottom: 8px;
+}
+.combat-card { border-color: var(--blood); }
+.combat-note {
+  color: var(--muted);
+  font-size: 13px;
+  font-style: italic;
+  margin: 8px 0 10px;
+  text-align: center;
+}
+.combat-actions { display: flex; gap: 8px; justify-content: center; }
+.combat-actions .btn-small { flex: 1; text-align: center; }
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  z-index: 200;
+  max-width: min(92vw, 560px);
+  padding: 14px 22px;
+  border-radius: 12px;
+  border: 1px solid var(--gold);
+  background: linear-gradient(180deg, #2c2140, #1c1529);
+  color: var(--gold-bright);
+  font-size: 16px;
+  text-align: center;
+  box-shadow: 0 0 30px rgba(201, 162, 39, 0.45), var(--shadow);
+  animation: toastIn 0.3s ease;
+}
+@keyframes toastIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(12px); }
+}
 .save-row {
   display: grid;
   grid-template-columns: auto auto auto 1fr;
